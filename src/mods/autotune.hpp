@@ -289,7 +289,7 @@ inline void OnInitDevice(reshade::api::device* device) {
 inline void OnDestroyDevice(reshade::api::device* device) {
   auto* data = renodx::utils::data::Get<DeviceData>(device);
   if (data == nullptr) return;
-  device->wait_idle();
+  // NOTE: ReShade exposes wait_idle() only on command_queue; GPU is already drained at destroy_device time.
   if (data->stats_uav.handle != 0u) device->destroy_resource_view(data->stats_uav);
   if (data->stats_buffer.handle != 0u) device->destroy_resource(data->stats_buffer);
   for (auto& readback : data->readback) {
@@ -434,4 +434,35 @@ inline std::vector<renodx::utils::settings::Setting*> NewSettings(
       new renodx::utils::settings::Setting{
           .value_type = renodx::utils::settings::SettingValueType::BUTTON,
           .label = "Apply Suggestions",
-          .section = "A
+          .section = "Auto Tune (Suggest)",
+          .tooltip = "Writes the suggested values to the sliders above (same as moving them by hand).",
+          .on_click = [shared_map]() {
+            const auto rec = GetRecommendation();
+            std::vector<std::pair<std::string, float>> pairs;
+            pairs.reserve(shared_map->size());
+            for (const auto& [key, getter] : *shared_map) {
+              pairs.emplace_back(key, getter(rec));
+            }
+            renodx::utils::settings::UpdateSettings(pairs);
+            return true;
+          },
+      },
+  };
+}
+
+inline void Use(DWORD fdw_reason) {
+  switch (fdw_reason) {
+    case DLL_PROCESS_ATTACH:
+      reshade::register_event<reshade::addon_event::init_device>(internal::OnInitDevice);
+      reshade::register_event<reshade::addon_event::destroy_device>(internal::OnDestroyDevice);
+      reshade::register_event<reshade::addon_event::present>(internal::OnPresent);
+      break;
+    case DLL_PROCESS_DETACH:
+      reshade::unregister_event<reshade::addon_event::init_device>(internal::OnInitDevice);
+      reshade::unregister_event<reshade::addon_event::destroy_device>(internal::OnDestroyDevice);
+      reshade::unregister_event<reshade::addon_event::present>(internal::OnPresent);
+      break;
+  }
+}
+
+}  // namespace renodx::mods::autotune

@@ -78,4 +78,13 @@ void Accumulate(float3 color_bt709, float4 sv_position) {
 }  // namespace autotune
 }  // namespace renodx
 
-#define RENODX_AUTOTUNE_ACCU
+#define RENODX_AUTOTUNE_ACCUMULATE(color, sv_pos) \
+  renodx::autotune::Accumulate((color), (sv_pos))
+
+#else  // !RENODX_AUTOTUNE
+
+#define RENODX_AUTOTUNE_ACCUMULATE(color, sv_pos)
+
+#endif  // RENODX_AUTOTUNE
+
+#endif  // SRC_SHADERS_AUTOTUNE_HLSL_
