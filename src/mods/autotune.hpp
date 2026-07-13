@@ -267,7 +267,7 @@ inline void OnInitDevice(reshade::api::device* device) {
 inline void OnDestroyDevice(reshade::api::device* device) {
   auto* data = renodx::utils::data::Get<DeviceData>(device);
   if (data == nullptr) return;
-  device->wait_idle();
+  // NOTE: ReShade exposes wait_idle() only on command_queue; GPU is already drained at destroy_device time.
   if (data->stats_uav.handle != 0u) device->destroy_resource_view(data->stats_uav);
   if (data->stats_buffer.handle != 0u) device->destroy_resource(data->stats_buffer);
   for (auto& readback : data->readback) {
