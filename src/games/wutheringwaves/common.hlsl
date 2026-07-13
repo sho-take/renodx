@@ -1,6 +1,12 @@
 #include "./shared.h"
 #include "./psycho_test11.hlsli"
 
+// AutoTune scene statistics (Suggest mode). Accumulates a luminance
+// histogram + gamut stats from the untonemapped scene color.
+// CPU side: renodx::mods::autotune (mods/autotune.hpp).
+#define RENODX_AUTOTUNE 1
+#include "../../shaders/autotune.hlsl"
+
 #define WUWA_PEAK_SCALING (RENODX_PEAK_NITS / RENODX_GAME_NITS)
 
 #define APPLY_BLOOM(c) (c).rgb *= RENODX_WUWA_BLOOM
@@ -20,7 +26,9 @@
 
 #define CLAMP_IF_SDR3(r, g, b) { if (RENODX_TONE_MAP_TYPE == 0.f) { (r) = saturate((r)); (g) = saturate((g)); (b) = saturate((b)); } }
 
-#define CAPTURE_UNTONEMAPPED(c) const float3 untonemapped = (c).rgb
+#define CAPTURE_UNTONEMAPPED(c) \
+  const float3 untonemapped = (c).rgb; \
+  RENODX_AUTOTUNE_ACCUMULATE(untonemapped, SV_Position)
 
 #define CAPTURE_TONEMAPPED(c) const float3 tonemapped = (c).rgb
 

@@ -11,6 +11,7 @@
 #include <embed/shaders.h>
 #include <include/reshade.hpp>
 
+#include "../../mods/autotune.hpp"
 #include "../../mods/shader.hpp"
 #include "../../mods/swapchain.hpp"
 #include "../../utils/date.hpp"
@@ -1127,6 +1128,17 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           }
         }
 
+        // AutoTune (Suggest): bind stats UAV to custom shaders and add UI.
+        renodx::mods::autotune::SetupCustomShaders(custom_shaders);
+        for (auto* autotune_setting : renodx::mods::autotune::NewSettings({
+                 {"ColorGradeHighlights", [](const renodx::mods::autotune::Recommendation& r) { return r.highlights; }},
+                 {"ColorGradeShadows", [](const renodx::mods::autotune::Recommendation& r) { return r.shadows; }},
+                 {"ColorGradeContrast", [](const renodx::mods::autotune::Recommendation& r) { return r.contrast; }},
+                 {"ColorGradeBlowout", [](const renodx::mods::autotune::Recommendation& r) { return r.dechroma; }},
+             })) {
+          settings.push_back(autotune_setting);
+        }
+
         renodx::mods::shader::expected_constant_buffer_index = 13;
         renodx::mods::shader::expected_constant_buffer_space = 50;
         renodx::mods::shader::allow_multiple_push_constants = true;
@@ -1188,6 +1200,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       break;
   }
 
+  renodx::mods::autotune::Use(fdw_reason);
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
   renodx::mods::swapchain::Use(fdw_reason, &shader_injection);
