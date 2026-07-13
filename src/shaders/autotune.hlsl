@@ -29,7 +29,10 @@
 #define RENODX_AUTOTUNE_UAV_SPACE space50
 #endif
 
-RWBuffer<uint> renodx_autotune_stats
+// RWTexture1D<uint> (not RWBuffer): matches the CPU-side texture_1d
+// R32_UINT resource. Buffer UAVs fail silently through ReShade's D3D12
+// descriptor path; 1D textures are the proven route (Starfield precedent).
+RWTexture1D<uint> renodx_autotune_stats
     : register(RENODX_AUTOTUNE_UAV_SLOT, RENODX_AUTOTUNE_UAV_SPACE);
 
 namespace renodx {
@@ -75,13 +78,4 @@ void Accumulate(float3 color_bt709, float4 sv_position) {
 }  // namespace autotune
 }  // namespace renodx
 
-#define RENODX_AUTOTUNE_ACCUMULATE(color, sv_pos) \
-  renodx::autotune::Accumulate((color), (sv_pos))
-
-#else  // !RENODX_AUTOTUNE
-
-#define RENODX_AUTOTUNE_ACCUMULATE(color, sv_pos)
-
-#endif  // RENODX_AUTOTUNE
-
-#endif  // SRC_SHADERS_AUTOTUNE_HLSL_
+#define RENODX_AUTOTUNE_ACCU

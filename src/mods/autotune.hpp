@@ -125,7 +125,23 @@ inline float Percentile(const uint32_t* histogram, uint32_t total, float fractio
 inline void Analyze(const uint32_t* dwords) {
   SceneStats stats;
   stats.samples = dwords[OFFSET_SAMPLE_COUNT];
-  if (stats.samples == 0u) return;
+  if (stats.samples == 0u) {
+    // Diagnostic: if this persists, the shader-side accumulation is not
+    // running (descriptor push failed or replaced shaders not in use).
+    static uint64_t empty_count = 0;
+    if (((empty_count++) % 600u) == 0u) {
+      reshade::log::message(reshade::log::level::warning,
+                            "mods::autotune readback OK but sample count is 0 (shader not accumulating)");
+    }
+    return;
+  }
+  static bool logged_first_stats = false;
+  if (!logged_first_stats) {
+    logged_first_stats = true;
+    std::stringstream s;
+    s << "mods::autotune first stats received (samples=" << stats.samples << ")";
+    reshade::log::message(reshade::log::level::info, s.str().c_str());
+  }
 
   stats.p50 = Percentile(dwords, stats.samples, 0.50f);
   stats.p95 = Percentile(dwords, stats.samples, 0.95f);
@@ -217,37 +233,43 @@ inline void OnInitDevice(reshade::api::device* device) {
 
   auto* data = renodx::utils::data::Create<DeviceData>(device);
 
-  reshade::api::resource_desc buffer_desc(
-      BUFFER_SIZE,
+  // texture_1d + R32_UINT instead of a buffer UAV: this mirrors the only
+  // proven descriptor-injection UAV path in this codebase (Starfield eye
+  // adaptation). Buffer UAVs via ReShade's D3D12 backend fail silently
+  // (no stride / descriptor creation quirks), which left the histogram
+  // permanently empty.
+  const reshade::api::resource_desc stats_desc(
+      reshade::api::resource_type::texture_1d,
+      TOTAL_DWORDS, 1, 1, 1,
+      reshade::api::format::r32_uint, 1,
       reshade::api::memory_heap::gpu_only,
       reshade::api::resource_usage::unordered_access
           | reshade::api::resource_usage::copy_source);
 
   if (!device->create_resource(
-          buffer_desc, nullptr,
+          stats_desc, nullptr,
           reshade::api::resource_usage::unordered_access,
           &data->stats_buffer)) {
-    reshade::log::message(reshade::log::level::error, "mods::autotune failed to create stats buffer");
+    reshade::log::message(reshade::log::level::error, "mods::autotune failed to create stats texture");
     return;
   }
 
   if (!device->create_resource_view(
           data->stats_buffer,
           reshade::api::resource_usage::unordered_access,
-          // Typed buffer view: ReShade's D3D12 backend does not set
-          // StructureByteStride, so structured views are unusable here.
-          // buffer.offset/size are in ELEMENTS for typed views.
           reshade::api::resource_view_desc(
-              reshade::api::resource_view_type::buffer,
+              reshade::api::resource_view_type::texture_1d,
               reshade::api::format::r32_uint,
-              0, TOTAL_DWORDS),
+              0, 1, 0, 1),
           &data->stats_uav)) {
     reshade::log::message(reshade::log::level::error, "mods::autotune failed to create stats UAV");
     return;
   }
 
+  // 512 bytes covers the D3D12 buffer/texture copy footprint alignment
+  // (row pitch 256, placement 512) with headroom over TOTAL_DWORDS*4.
   const reshade::api::resource_desc readback_desc(
-      BUFFER_SIZE,
+      512,
       reshade::api::memory_heap::gpu_to_cpu,
       reshade::api::resource_usage::copy_dest);
   for (auto& readback : data->readback) {
@@ -267,7 +289,7 @@ inline void OnInitDevice(reshade::api::device* device) {
 inline void OnDestroyDevice(reshade::api::device* device) {
   auto* data = renodx::utils::data::Get<DeviceData>(device);
   if (data == nullptr) return;
-  // NOTE: ReShade exposes wait_idle() only on command_queue; GPU is already drained at destroy_device time.
+  device->wait_idle();
   if (data->stats_uav.handle != 0u) device->destroy_resource_view(data->stats_uav);
   if (data->stats_buffer.handle != 0u) device->destroy_resource(data->stats_buffer);
   for (auto& readback : data->readback) {
@@ -303,7 +325,7 @@ inline void OnPresent(
       data->stats_buffer,
       reshade::api::resource_usage::unordered_access,
       reshade::api::resource_usage::copy_source);
-  cmd_list->copy_buffer_region(data->stats_buffer, 0, data->readback[slot], 0, BUFFER_SIZE);
+  cmd_list->copy_texture_to_buffer(data->stats_buffer, 0, nullptr, data->readback[slot], 0);
   cmd_list->barrier(
       data->stats_buffer,
       reshade::api::resource_usage::copy_source,
@@ -327,6 +349,13 @@ inline void OnPresent(
       std::memcpy(dwords, mapped, BUFFER_SIZE);
       device->unmap_buffer_region(data->readback[oldest]);
       Analyze(dwords);
+    } else {
+      static bool logged_map_failure = false;
+      if (!logged_map_failure) {
+        logged_map_failure = true;
+        reshade::log::message(reshade::log::level::error,
+                              "mods::autotune readback map failed");
+      }
     }
   }
 
@@ -341,7 +370,7 @@ inline void OnPresent(
 inline void SetupCustomShaders(renodx::mods::shader::CustomShaders& custom_shaders) {
   for (auto& [hash, custom_shader] : custom_shaders) {
     custom_shader.views.push_back({
-        .type = reshade::api::descriptor_type::buffer_unordered_access_view,
+        .type = reshade::api::descriptor_type::texture_unordered_access_view,
         .slot = stats_uav_slot,
         .space = stats_uav_space,
         .get_view = &internal::GetStatsView,
@@ -405,35 +434,4 @@ inline std::vector<renodx::utils::settings::Setting*> NewSettings(
       new renodx::utils::settings::Setting{
           .value_type = renodx::utils::settings::SettingValueType::BUTTON,
           .label = "Apply Suggestions",
-          .section = "Auto Tune (Suggest)",
-          .tooltip = "Writes the suggested values to the sliders above (same as moving them by hand).",
-          .on_click = [shared_map]() {
-            const auto rec = GetRecommendation();
-            std::vector<std::pair<std::string, float>> pairs;
-            pairs.reserve(shared_map->size());
-            for (const auto& [key, getter] : *shared_map) {
-              pairs.emplace_back(key, getter(rec));
-            }
-            renodx::utils::settings::UpdateSettings(pairs);
-            return true;
-          },
-      },
-  };
-}
-
-inline void Use(DWORD fdw_reason) {
-  switch (fdw_reason) {
-    case DLL_PROCESS_ATTACH:
-      reshade::register_event<reshade::addon_event::init_device>(internal::OnInitDevice);
-      reshade::register_event<reshade::addon_event::destroy_device>(internal::OnDestroyDevice);
-      reshade::register_event<reshade::addon_event::present>(internal::OnPresent);
-      break;
-    case DLL_PROCESS_DETACH:
-      reshade::unregister_event<reshade::addon_event::init_device>(internal::OnInitDevice);
-      reshade::unregister_event<reshade::addon_event::destroy_device>(internal::OnDestroyDevice);
-      reshade::unregister_event<reshade::addon_event::present>(internal::OnPresent);
-      break;
-  }
-}
-
-}  // namespace renodx::mods::autotune
+          .section = "A
